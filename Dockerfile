@@ -1,7 +1,7 @@
 ############################
 # STEP 1 build executable binary
 ############################
-FROM golang:1.12-stretch AS builder
+FROM golang:1.14-stretch AS builder
 COPY . /app/src/
 #ENV GOPROXY=https://mirrors.aliyun.com/goproxy/
 ENV CGO_ENABLED=0
