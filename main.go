@@ -3,11 +3,6 @@ package main
 import (
 	"context"
 	"github.com/gin-gonic/gin"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-
 	c "github.com/totoval/framework/config"
 	"github.com/totoval/framework/graceful"
 	"github.com/totoval/framework/helpers/log"
@@ -16,6 +11,10 @@ import (
 	"github.com/totoval/framework/http/middleware"
 	"github.com/totoval/framework/request"
 	"github.com/totoval/framework/sentry"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"totoval/bootstrap"
 	"totoval/resources/views"
 	"totoval/routes"
@@ -70,7 +69,26 @@ func httpServe(ctx context.Context) {
 
 	r.Use(middleware.Locale())
 
-	r.UseGin(gin.BasicAuth(c.Get("webdav.accounts").(gin.Accounts)))
+	r.UseGin(func(c *gin.Context) {
+		//t := time.Now()
+
+		// Set example variable
+		authUser := c.Request.Header.Get("X-Auth-Request-User")
+
+		if len(authUser) == 0 {
+			c.JSON(http.StatusForbidden, gin.H{"Error": "Access Denied"})
+		}
+
+		// before request
+
+		c.Next()
+
+		// after request
+		//latency := time.Since(t)
+
+		// access the status we are sending
+		//status := c.Writer.Status()
+	})
 
 	routes.Register(r)
 
