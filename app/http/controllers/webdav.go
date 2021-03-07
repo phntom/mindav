@@ -13,10 +13,17 @@ type WebDAV struct {
 
 func (wd *WebDAV) Handle(c *request.Context) {
 	authUser := c.Request.Header.Get("X-Auth-Request-User")
-	requestUri := c.Request.RequestURI[11:]
-	newUri := fmt.Sprintf("/v1/webdav/u/%s/%s", authUser, requestUri)
+	requestUri := c.Request.RequestURI
+	newUri := fmt.Sprintf("/v1/webdav/u/%s/%s", authUser, requestUri[11:])
 	c.Request.RequestURI = newUri
 	c.Request.URL.Path = newUri
+
+	requestUri = c.Request.Header.Get("Destination")
+	if len(requestUri) > 0 {
+		newUri = fmt.Sprintf("/v1/webdav/u/%s/%s", authUser, requestUri[11:])
+		c.Request.Header.Set("Destination", newUri)
+	}
+
 	mindav.Handler().ServeHTTP(c.Writer, c.Request)
 	return
 }
