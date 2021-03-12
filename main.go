@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"github.com/gin-gonic/gin"
+	"github.com/mattermost/mattermost-server/v5/model"
 	c "github.com/totoval/framework/config"
 	"github.com/totoval/framework/graceful"
 	"github.com/totoval/framework/helpers/log"
@@ -14,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
+	"strings"
 	"syscall"
 	"totoval/bootstrap"
 	"totoval/resources/views"
@@ -77,6 +81,33 @@ func httpServe(ctx context.Context) {
 
 		if len(authUser) == 0 {
 			c.JSON(http.StatusForbidden, gin.H{"Error": "Access Denied"})
+			c.Abort()
+			return
+		}
+
+		if authUser == "kixtoken@" {
+			auth := strings.SplitN(c.Request.Header.Get("Authorization"), " ", 2)
+			if len(auth) != 2 || auth[0] != "Basic" {
+				c.JSON(http.StatusForbidden, gin.H{"Error": "Please use basic auth with token in the password field"})
+				c.Abort()
+				return
+			}
+			payload, _ := base64.StdEncoding.DecodeString(auth[1])
+			token := strings.SplitN(string(payload), ":", 2)[1]
+			if !regexp.MustCompile(`^[a-z0-9]{26}$`).MatchString(token) {
+				c.JSON(http.StatusForbidden, gin.H{"Error": "Invalid personal access token, please generate at https://kix.co.il Account Settings > Security"})
+				c.Abort()
+				return
+			}
+			mm := model.NewAPIv4Client("https://kix.co.il")
+			mm.SetToken(token)
+			me, response := mm.GetMe("")
+			if response.StatusCode != 200 {
+				c.JSON(http.StatusForbidden, gin.H{"Error": "Unauthorized personal access token, please generate at https://kix.co.il Account Settings > Security"})
+				c.Abort()
+				return
+			}
+			c.Request.Header.Set("X-Auth-Request-User", me.Email)
 		}
 
 		// before request

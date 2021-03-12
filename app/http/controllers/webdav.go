@@ -20,7 +20,8 @@ func (wd *WebDAV) Handle(c *request.Context) {
 
 	requestUri = c.Request.Header.Get("Destination")
 	if len(requestUri) > 0 {
-		newUri = fmt.Sprintf("/v1/webdav/u/%s/%s", authUser, requestUri[11:])
+		uriPrefixLen := len(c.Request.Header.Get("X-URI-Prefix"))
+		newUri = fmt.Sprintf("http://%s/v1/webdav/u/%s/%s", c.Request.Host, authUser, requestUri[uriPrefixLen:])
 		c.Request.Header.Set("Destination", newUri)
 	}
 
