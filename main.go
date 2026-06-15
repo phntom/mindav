@@ -1,110 +1,94 @@
+// Command mindav is a WebDAV server backed by Google Cloud Storage.
+//
+// It preserves the behavior of the previous totoval/MinIO implementation:
+// requests are authenticated via the X-Auth-Request-User header (set by the
+// fronting oauth2-proxy), each user's files are namespaced under u/<user>/ in
+// the bucket, and the service is served under the /v1/webdav prefix.
 package main
 
 import (
 	"context"
-	"github.com/gin-gonic/gin"
+	"errors"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	c "github.com/totoval/framework/config"
-	"github.com/totoval/framework/graceful"
-	"github.com/totoval/framework/helpers/log"
-	"github.com/totoval/framework/helpers/toto"
-	"github.com/totoval/framework/helpers/zone"
-	"github.com/totoval/framework/http/middleware"
-	"github.com/totoval/framework/request"
-	"github.com/totoval/framework/sentry"
-	"totoval/bootstrap"
-	"totoval/resources/views"
-	"totoval/routes"
+	"cloud.google.com/go/storage"
+	"golang.org/x/net/webdav"
+
+	"github.com/phntom/mindav/internal/auth"
+	"github.com/phntom/mindav/internal/gcsfs"
+	"github.com/phntom/mindav/internal/rewrite"
 )
 
-func init() {
-	bootstrap.Initialize()
-}
-
-// @caution cannot use config methods to get config in init function
 func main() {
-	//j := &jobs.ExampleJob{}
-	//j.SetParam(&pbs.ExampleJob{Query: "test", PageNumber: 111, ResultPerPage: 222})
-	////j.SetDelay(5 * zone.Second)
-	//err := job.Dispatch(j)
-	//fmt.Println(err)
+	bucket := mustEnv("GCS_BUCKET")
+	port := envOr("PORT", "8080")
+	mattermostURL := envOr("MATTERMOST_URL", "https://kix.co.il")
 
-	//go hub.On("add-user-affiliation")  // go run artisan.go queue:listen add-user-affiliation
+	client, err := storage.NewClient(context.Background())
+	if err != nil {
+		log.Fatalf("create storage client: %v", err)
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	dav := &webdav.Handler{
+		Prefix:     "/v1/webdav",
+		FileSystem: gcsfs.New(client, bucket),
+		LockSystem: webdav.NewMemLS(),
+		Logger: func(r *http.Request, err error) {
+			if err != nil {
+				log.Printf("webdav %s %s: %v", r.Method, r.URL.Path, err)
+			}
+		},
+	}
 
-	quit := make(chan os.Signal, 1)
-	// kill (no param) default send syscanll.SIGTERM
-	// kill -2 is syscall.SIGINT
-	// kill -9 is syscall. SIGKILL but can"t be catch, so don't need add it
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	handler := &auth.Middleware{
+		Next:          &rewrite.Handler{Next: dav},
+		MattermostURL: mattermostURL,
+		Client:        &http.Client{Timeout: 10 * time.Second},
+	}
 
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           handler,
+		ReadHeaderTimeout: 15 * time.Second,
+	}
+
+	idle := make(chan struct{})
 	go func() {
-		call := <-quit
-		log.Info("system call", toto.V{"call": call})
-		cancel()
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+		close(idle)
 	}()
 
-	httpServe(ctx)
+	log.Printf("mindav listening on :%s (bucket=%s)", port, bucket)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("serve: %v", err)
+	}
+	<-idle
+	_ = client.Close()
 }
 
-func httpServe(ctx context.Context) {
-	r := request.New()
-
-	sentry.Use(r.GinEngine(), false)
-
-	if c.GetBool("app.debug") {
-		//r.Use(middleware.RequestLogger())
+func mustEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		log.Fatalf("missing required env var %s", key)
 	}
+	return v
+}
 
-	r.RedirectTrailingSlash = false
-
-	if c.GetString("app.env") == "production" {
-		r.Use(middleware.Logger())
-		r.Use(middleware.Recovery())
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
-
-	r.Use(middleware.Locale())
-
-	r.UseGin(gin.BasicAuth(c.Get("webdav.accounts").(gin.Accounts)))
-
-	routes.Register(r)
-
-	views.Initialize(r)
-
-	s := &http.Server{
-		Addr:           ":" + c.GetString("app.port"),
-		Handler:        r,
-		ReadTimeout:    zone.Duration(c.GetInt64("app.read_timeout_seconds")) * zone.Second,
-		WriteTimeout:   zone.Duration(c.GetInt64("app.write_timeout_seconds")) * zone.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
-
-	go func() {
-		if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err.Error())
-		}
-	}()
-
-	<-ctx.Done()
-
-	log.Info("Shutdown Server ...")
-
-	// Wait for interrupt signal to gracefully shutdown the server with
-	// a timeout of 5 seconds.
-	_ctx, cancel := context.WithTimeout(ctx, 5*zone.Second)
-	defer cancel()
-
-	if err := s.Shutdown(_ctx); err != nil {
-		log.Fatal("Server Shutdown: ", toto.V{"error": err})
-	}
-
-	// totoval framework shutdown
-	graceful.ShutDown(false)
-
-	log.Info("Server exiting")
+	return fallback
 }
